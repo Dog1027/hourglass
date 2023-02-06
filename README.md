@@ -1,1 +1,1 @@
-![](houglass.jpg)
+<img src="houglass.jpg" width="50%" height="50%">
