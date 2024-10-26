@@ -1,14 +1,15 @@
 #include <SPI.h>
 
-#define MAX7219_PIN_CS  SS   // 10
-#define MAX7219_PIN_DIN MOSI // 11
-#define MAX7219_PIN_CLK SCK  // 13
+#define MAX7219_PIN_CS   SS   // 10
+#define MAX7219_PIN_DIN  MOSI // 11
+#define MAX7219_PIN_CLK  SCK  // 13
+#define MAX7219_PIN_LOAD MAX7219_PIN_CS
 
-#define ADXL335_PIN_X A1
-#define ADXL335_PIN_Y A2
-#define ADXL335_PIN_Z A3
+#define ADXL335_PIN_X A5
+#define ADXL335_PIN_Y A6
+#define ADXL335_PIN_Z A7
 
-#define FRAME_DELAY 1000
+#define FRAME_DELAY 100
 #define DROP_DELAY_TICK 6
 
 enum Max7219Address {
@@ -51,17 +52,22 @@ PROGMEM const byte MATRIX[2][8] = { //初始圖案
   },
 };
 
-void max7219Transfer(byte addr, byte data, bool end) {
-  digitalWrite(MAX7219_PIN_CS, LOW);  // 選取晶片
-  SPI.transfer(addr); // 暫存器位址
-  SPI.transfer(data); // 資料
-  if (end)
-    digitalWrite(MAX7219_PIN_CS, HIGH); // 取消選取晶片
-  Serial.print("addr:");
-  Serial.print(addr);
-  Serial.print(", data:");
-  Serial.println(data);
-  delay(100);
+void max7219Config(Max7219Address addr, byte data, byte num) {
+  digitalWrite(MAX7219_PIN_LOAD, LOW);
+  for (int i=0; i<num; i++) {
+    SPI.transfer(addr); // 暫存器位址
+    SPI.transfer(data); // 資料
+  }
+  digitalWrite(MAX7219_PIN_LOAD, HIGH);
+}
+
+void max7219SendData(byte addr, byte *data, byte num) {
+  digitalWrite(MAX7219_PIN_LOAD, LOW);
+  for (int i=0; i<num; i++) {
+    SPI.transfer(addr); // 暫存器位址
+    SPI.transfer(data[i]); // 資料
+  }
+  digitalWrite(MAX7219_PIN_LOAD, HIGH);
 }
 
 enum Direction {
@@ -76,106 +82,97 @@ enum Direction {
 };
 
 class HourGlass {
-  byte (*matrix)[8];
-  byte (*matrixLast)[8];
-  byte _matrix[2][2][8];
+  byte matrix[2][8];
   bool pixelRead(byte row, byte col, byte bottomOrTop);
   void pixelWrite(byte row, byte col, byte bottomOrTop, bool state);
-  bool pixelGetNewPosition(byte& row, byte& col, byte& bottomOrTop, byte direct);
-  void pixelMove(byte row, byte col, byte bottomOrTop, byte direct, bool clockwise);
+  bool pixelGetNewPosition(byte& row, byte& col, byte& bottomOrTop, char direct);
+  void pixelMove(byte row, byte col, byte bottomOrTop, char direct, bool clockwise);
 public:
   HourGlass();
   void init();
   void draw();
   void clear();
-  void getDirect(byte& direct, bool& clockwise);
-  void matrixUpdate(byte direct, bool clockwise);
+  void getDirect(char& direct, bool& clockwise);
+  void matrixUpdate(char direct, bool clockwise);
+  void debug();
 };
 
 HourGlass::HourGlass() {
-  matrix = _matrix[0];
-  matrixLast = _matrix[1];
   memcpy_P(matrix, MATRIX, sizeof(MATRIX));
 }
 
 void HourGlass::init() {
-  max7219Transfer(DECODE, 0, 0);
-  max7219Transfer(INTENSITY, 1, 0);
-  max7219Transfer(SCAN_LIMIT, 7, 0);
-  max7219Transfer(SHUTDOWN, 1, 0);
-  max7219Transfer(DISPLAY_TEST, 0, 0);
-  max7219Transfer(NO_OP, 0, 1);
+  max7219Config(DECODE, 0, 2);
+  max7219Config(INTENSITY, 0, 2);
+  max7219Config(SCAN_LIMIT, 7, 2);
+  max7219Config(SHUTDOWN, 1, 2);
+  max7219Config(DISPLAY_TEST, 0, 2);
 }
 
 void HourGlass::draw() {
-  byte (*temp)[8] = matrix;
   for (int i=0; i<8; i++) { // 第一排到第八排
-    max7219Transfer(DIGIT_0+i, matrix[0][i], 0);
-    max7219Transfer(DIGIT_0+i, matrix[1][i], 1);
+    byte data[2] = {matrix[0][i], matrix[1][i]};
+    max7219SendData(DIGIT_0+i, data, 2);
   }
-  matrix = matrixLast;
-  matrixLast = temp;
 }
 
 void HourGlass::clear() {
   for (int i=0; i<8; i++) { // 第一排到第八排
-    max7219Transfer(DIGIT_0+i, 0, 0);
-    max7219Transfer(DIGIT_0+i, 0, 1);
+    byte data[2] = {0};
+    max7219SendData(DIGIT_0+i, data, 2);
   }
 }
 
 bool HourGlass::pixelRead(byte row, byte col, byte bottomOrTop) {
-  return bitRead(matrixLast[bottomOrTop][row-1], 8-col);
+  return bitRead(matrix[bottomOrTop][row-1], 8-col);
 }
 
 void HourGlass::pixelWrite(byte row, byte col, byte bottomOrTop, bool state) {
-  if (state)
-    bitWrite(matrix[bottomOrTop][row-1], 8-col, 1);
-  else
-    bitWrite(matrixLast[bottomOrTop][row-1], 8-col, 0);
-  //Serial.println(matrix[bottomOrTop][row-1], BIN);
+  bitWrite(matrix[bottomOrTop][row-1], 8-col, state);
 }
 
-bool HourGlass::pixelGetNewPosition(byte& row, byte& col, byte& bottomOrTop, byte direct) {
+bool HourGlass::pixelGetNewPosition(byte& row, byte& col, byte& bottomOrTop, char direct) {
   static byte tickTopToBottom = 0;
   static byte tickBottomToTop = 0;
+  byte _row = row;
+  byte _col = col;
 
-  if (!(direct==TOP_LEFT || direct==TOP || direct==TOP_RIGHT)) tickBottomToTop = 0;
-  if (!(direct==BOTTOM_RIGHT || direct==BOTTOM || direct==BOTTOM_LEFT)) tickTopToBottom = 0;
+  if (!(direct==TOP_LEFT || direct==TOP || direct==TOP_RIGHT)) tickTopToBottom = 0;
+  if (!(direct==BOTTOM_RIGHT || direct==BOTTOM || direct==BOTTOM_LEFT)) tickBottomToTop = 0;
 
   switch (direct) {
     case TOP_LEFT:
-      col--;
+      _col--;
       break;
     case TOP:
-      row--;
-      col--;
+      _row--;
+      _col--;
       break;
     case TOP_RIGHT:
-      row--;
+      _row--;
       break;
     case RIGHT:
-      row--;
-      col++;
+      _row--;
+      _col++;
       break;
     case BOTTOM_RIGHT:
-      col++;
+      _col++;
       break;
     case BOTTOM:;
-      row++;
-      col++;
+      _row++;
+      _col++;
       break;
     case BOTTOM_LEFT:
-      row++;
+      _row++;
       break;
     case LEFT:
-      row++;
-      col--;
+      _row++;
+      _col--;
       break;
   }
 
-  if (row>8 || col>8 || row<1 || col<1) {
-    if (row>8 && col>8 && bottomOrTop==1) { //下到上
+  if (_row>8 || _col>8 || _row<1 || _col<1) {
+    if (_row>8 && _col>8 && bottomOrTop==1) { //下到上
       if (tickBottomToTop < DROP_DELAY_TICK) {
         tickBottomToTop++;
         return false;
@@ -191,7 +188,7 @@ bool HourGlass::pixelGetNewPosition(byte& row, byte& col, byte& bottomOrTop, byt
         return true;
       }
     }
-    else if (row<1 && col<1 && bottomOrTop==0){ // 上到下
+    else if (_row<1 && _col<1 && bottomOrTop==0){ // 上到下
       if (tickTopToBottom < DROP_DELAY_TICK) {
         tickTopToBottom++;
         return false;
@@ -211,30 +208,38 @@ bool HourGlass::pixelGetNewPosition(byte& row, byte& col, byte& bottomOrTop, byt
       return false;
     }
   }
-  else if (pixelRead(row, col, bottomOrTop)){
+  else if (pixelRead(_row, _col, bottomOrTop)) {
     return false;
   }
   else {
+    row = _row;
+    col = _col;
     return true;
   }
 }
 
-void HourGlass::pixelMove(byte row, byte col, byte bottomOrTop, byte direct, bool clockwise) {
-  byte pre_row = row;
-  byte pre_col = col;
-  byte pre_bottomOrTop = bottomOrTop;
+void HourGlass::debug() {
+  int x = 0;
+  for (int i=1; i<=8; i++) {
+    for (int j=1; j<=8; j++) {
+      if (pixelRead(i, j, 0))
+        x++;
+      if (pixelRead(i, j, 1))
+        x++;
+    }
+  }
+  Serial.print("x: ");
+  Serial.println(x);
+}
 
+void HourGlass::pixelMove(byte row, byte col, byte bottomOrTop, char direct, bool clockwise) {
   if (!pixelRead(row, col, bottomOrTop))
     return;
-    
-  pixelWrite(pre_row, pre_col, pre_bottomOrTop, 0);
 
+  pixelWrite(row, col, bottomOrTop, 0);
   if (pixelGetNewPosition(row, col, bottomOrTop, direct)) {//取得移動方向座標
     pixelWrite(row, col, bottomOrTop, 1);
   }
-  else
-    pixelWrite(pre_row, pre_col, pre_bottomOrTop, 1);
-  /*
   else if (!clockwise) {
     if (pixelGetNewPosition(row, col, bottomOrTop, direct+1>7 ? 0 : direct+1)) {
       pixelWrite(row, col, bottomOrTop, 1);
@@ -243,7 +248,7 @@ void HourGlass::pixelMove(byte row, byte col, byte bottomOrTop, byte direct, boo
       pixelWrite(row, col, bottomOrTop, 1);
     }
     else {
-      pixelWrite(pre_row, pre_col, pre_bottomOrTop, 1);
+      pixelWrite(row, col, bottomOrTop, 1);
     }
   }
   else {
@@ -254,22 +259,22 @@ void HourGlass::pixelMove(byte row, byte col, byte bottomOrTop, byte direct, boo
       pixelWrite(row, col, bottomOrTop, 1);
     }
     else {
-      pixelWrite(pre_row, pre_col, pre_bottomOrTop, 1);
+      pixelWrite(row, col, bottomOrTop, 1);
     }
   }
-  */
 }
 
-void HourGlass::matrixUpdate(byte direct, bool clockwise) {
+/*
+void HourGlass::matrixUpdate(char direct, bool clockwise) {
   for (int i=1; i<=8; i++) {
     for (int j=1; j<=8; j++) {
-        pixelMove(j, i, 0, direct, clockwise);
-        pixelMove(j, i, 1, direct, clockwise);
+        pixelMove(i, j, 0, direct, clockwise);
+        pixelMove(i, j, 1, direct, clockwise);
     }
   }
-}
+}*/
 
-void HourGlass::getDirect(byte& direct, bool& clockwise) {
+void HourGlass::getDirect(char& direct, bool& clockwise) {
   const int x_max = 406;
   const int x_min = 273;
   const int x_mid = (x_max + x_min) / 2;
@@ -313,41 +318,63 @@ void HourGlass::getDirect(byte& direct, bool& clockwise) {
       direct = TOP;
   }
 
+  switch (direct) {
+    case TOP_LEFT:
+      Serial.println("TOP_LEFT");
+      break;
+    case TOP:
+      Serial.println("TOP");
+      break;
+    case TOP_RIGHT:
+      Serial.println("TOP_RIGHT");
+      break;
+    case RIGHT:
+      Serial.println("RIGHT");
+      break;
+    case BOTTOM_RIGHT:
+      Serial.println("BOTTOM_RIGHT");
+      break;
+    case BOTTOM:;
+      Serial.println("BOTTOM");
+      break;
+    case BOTTOM_LEFT:
+      Serial.println("BOTTOM_LEFT");
+      break;
+    case LEFT:
+      Serial.println("LEFT");
+      break;
+  }
+
   clockwise = ((x>x_mid && y<y_mid) || (x<x_mid && y>y_mid)) ? 0 : 1;
 }
 
-HourGlass hourGlass;
-
-/*
-void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
+void HourGlass::matrixUpdate(char direct, bool clockwise) {
   switch (direct) {
     case TOP_LEFT:
-      for (int i=0; i<8; i++) {
-        for (int j=0; j<8; j++) {
-          if (!clockwise) {
-            pixelMove(j+1, i+1, 0, direct, clockwise);
-            pixelMove(j+1, i+1, 1, direct, clockwise);
-          }
-          else {
-            pixelMove(8-j, i+1, 0, direct, clockwise);
-            pixelMove(j+1, i+1, 1, direct, clockwise);
+      for (int k=1; k>=0; k--) {
+        for (int i=1; i<=8; i++) {
+          for (int j=1; j<=8; j++) {
+            if (!clockwise)
+              pixelMove(j, i, k, direct, clockwise);
+            else
+              pixelMove(9-j, i, k, direct, clockwise);
           }
         }
       }
       break;
     case TOP:
-      for (int k = 1;k >= 0;k --) {
-        for (int i = 2;i <= 16;i ++) {
+      for (int k=1; k>=0; k--) {
+        for (int i=2; i<=16; i++) {
           if (i <= 9) {
-            for (int j = 0;j < i-1;j ++){
+            for (int j=0; j<i-1; j++) {
               if (!clockwise)
                 pixelMove(j+1, i-j-1, k, direct, clockwise);
               else
                 pixelMove(i-j-1, j+1, k, direct, clockwise);
             }
           }
-          else{
-            for (int j = 0;j < 17-i;j ++){
+          else {
+            for (int j = 0;j < 17-i;j ++) {
               if (!clockwise)
                 pixelMove(i+j-8, 8-j, k, direct, clockwise);
               else
@@ -357,11 +384,10 @@ void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
         }
       }
       break;
-
     case TOP_RIGHT:
-      for (int k = 1;k >= 0;k --){
-        for (int i = 1;i <= 8;i ++){
-          for (int j = 1;j <= 8;j ++){
+      for (int k=1; k>=0; k--) {
+        for (int i=1; i<=8; i++) {
+          for (int j=1; j<=8; j++) {
             if (!clockwise)
               pixelMove(i, 9-j, k, direct, clockwise);
             else
@@ -370,41 +396,40 @@ void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
         }
       }
       break;
-
     case RIGHT:
-      for (int i = 1;i <= 8;i ++){
-        if (!clockwise){
-          for (int k = 0;k < 2;k ++){
-            for (int j = 0;j < i;j ++)
+      for (int i=1; i<=8; i++) {
+        if (!clockwise) {
+          for (int k=0; k<2; k++) {
+            for (int j=0; j<i; j++)
               pixelMove(i-j, 8-j, k, direct, clockwise);
           }
         }
-        else{
-          for (int k = 1;k >= 0;k --){
-            for (int j = 0;j < i;j ++)
+        else {
+          for (int k=1; k>=0; k--) {
+            for (int j=0; j<i; j++)
               pixelMove(1+j, 9-i+j, k, direct, clockwise);
           }
         }
       }
-      for (int i = 7;i >= 1;i --){
-        if (!clockwise){
-          for (int k = 0;k < 2;k ++){
-            for (int j = 0;j < i;j ++)
+      for (int i=7; i>=1; i--) {
+        if (!clockwise) {
+          for (int k=0; k<2; k++) {
+            for (int j=0; j<i; j++)
               pixelMove(8-j, i-j, k, direct, clockwise);
-            }
+          }
         }
         else{
-          for (int k = 1;k >= 0;k --){
+          for (int k = 1;k >= 0;k --) {
             for (int j = 0;j < i;j ++)
               pixelMove(9-i+j, 1+j, k, direct, clockwise);
-            }
+          }
         }
       }
       break;
     case BOTTOM_RIGHT://V
-      for (int k = 0;k < 2;k ++){
-        for (int i = 8;i > 0;i --){
-          for (int j = 1;j <= 8;j ++){
+      for (int k=0; k<2; k++) {
+        for (int i=8; i>0; i--) {
+          for (int j=1; j<=8; j++) {
             if (!clockwise)
               pixelMove(9-j, i, k, direct, clockwise);
             else
@@ -413,20 +438,19 @@ void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
         }
       }
       break;
-
     case BOTTOM://V
-      for (int k = 0;k < 2;k ++){
-        for (int i = 16;i > 1;i --){
-          if (i > 8){
-            for (int j = 0;j < 17-i;j ++){
+      for (int k=0; k<2; k++) {
+        for (int i=16; i>1; i--) {
+          if (i > 8) {
+            for (int j=0; j<17-i; j++) {
               if (!clockwise)
                 pixelMove(8-j, i+j-8, k, direct, clockwise);
               else
                 pixelMove(i+j-8, 8-j, k, direct, clockwise);
             }
           }
-          else{
-            for (int j = 0;j < i-1;j ++){
+          else {
+            for (int j=0; j<i-1; j++) {
               if (!clockwise)
                 pixelMove(i-j-1, 1+j, k, direct, clockwise);
               else
@@ -437,9 +461,9 @@ void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
       }
       break;
     case BOTTOM_LEFT://V
-      for (int k = 0;k < 2;k ++){
-        for (int i = 8;i > 0;i --){
-          for (int j = 1;j <= 8;j ++){
+      for (int k=0; k<2; k++) {
+        for (int i=8; i>0; i--) {
+          for (int j=1; j<=8; j++) {
             if (!clockwise)
               pixelMove(i, j, k, direct, clockwise);
             else
@@ -448,32 +472,31 @@ void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
         }
       }
       break;
-
     case LEFT:
-      for (int i = 1;i <= 8;i ++){
-        if (!clockwise){
-          for (int k = 1;k >= 0;k --){
-            for (int j = 0;j < i;j ++)
+      for (int i=1; i<=8; i++) {
+        if (!clockwise) {
+          for (int k=1; k>=0; k--) {
+            for (int j=0; j<i; j++)
               pixelMove(9-i+j, 1+j, k, direct, clockwise);
           }
         }
-        else{
-          for (int k = 0;k < 2;k ++){
-            for (int j = 0;j < i;j ++)
+        else {
+          for (int k=0; k<2; k++) {
+            for (int j=0; j<i; j++)
               pixelMove(8-j, i-j, k, direct, clockwise);
           }
         }
       }
-      for (int i = 7;i >= 1;i --){
-        if (!clockwise){
-          for (int k = 1;k >= 0;k --){
-            for (int j = 0;j < i;j ++)
+      for (int i=7; i>=1; i--) {
+        if (!clockwise) {
+          for (int k=1; k>=0; k--) {
+            for (int j=0; j<i; j++)
               pixelMove(1+j, 9-i+j, k, direct, clockwise);
             }
         }
-        else{
-          for (int k = 0;k < 2;k ++){
-            for (int j = 0;j < i;j ++)
+        else {
+          for (int k=0; k<2; k++) {
+            for (int j=0; j<i; j++)
               pixelMove(i-j, 8-j, k, direct, clockwise);
             }
         }
@@ -481,37 +504,27 @@ void matrixUpdate(byte direct, bool clockwise) {//從下到上 從左到右
       break;
   }
 }
-*/
 
+HourGlass hourGlass;
 
 void setup() {
   Serial.begin(115200);
   SPI.begin();
+  //SPI.setClockDivider(SPI_CLOCK_DIV8);
   
   hourGlass.init();
   hourGlass.clear();
   hourGlass.draw();
-  /*
-  for(int i = 0; i< 8;i++){
-    max7219(i+1, data[i]);
-  }
-  */
-  //Serial.println(pixel_check(data, 5, 5, 0));
-  /*
-  delay(100);
-  pixel_move(data, 5, 5, 0, 6);
-  draw_matrix(data, 2);*/
 }
 
-
 void loop() {
-  /*
-  byte direct;
-  bool clockwise;
-  delay(FRAME_DELAY);
-  hourGlass.getDirect(direct, clockwise);
-  Serial.println(direct);
-  hourGlass.matrixUpdate(direct, clockwise);
-  hourGlass.draw();
-  */
+  //if (Serial.available() && Serial.read()) {
+    static char direct = 0;
+    bool clockwise;
+    delay(FRAME_DELAY);
+    hourGlass.getDirect(direct, clockwise);
+    hourGlass.matrixUpdate(direct, clockwise);
+    hourGlass.draw();
+    //hourGlass.debug();
+  //}
 }
